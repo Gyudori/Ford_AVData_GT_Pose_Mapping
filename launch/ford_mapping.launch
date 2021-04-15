@@ -1,0 +1,8 @@
+<launch>   
+
+    <param name="load_frame_num" type="int" value="100"/>
+    <param name="skip_frame_num" type="int" value="3"/>
+
+    <node name="ford_mapping" pkg="ford_mapping" type="ford_mapping" output="screen" />
+    <include file="$(find ford_mapping)/launch/lidar_convert.launch" />
+</launch>
