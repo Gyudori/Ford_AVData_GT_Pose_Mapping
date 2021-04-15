@@ -1,4 +1,3 @@
-# Studying for kitti helper
+# Ford AV Data Lidar Mapping with GT Pose
 
-I want to study kitti parser C++ script, so I am copying the script of kitti_helper.cpp code of A-LOAM. I hope this should be the starting point of my C++ coding. 
-
+I love this script.
