@@ -1,9 +1,15 @@
 cmake_minimum_required(VERSION 2.8.3)
 project(ford_mapping)
 
-set(CMAKE_BUILD_TYPE "Release")
-set(CMAKE_CXX_FLAGS "-std=c++14")
-set(CMAKE_CXX_FLAGS_RELEASE "-O3 -Wall -g")
+# set(CMAKE_BUILD_TYPE "Release")
+# set(CMAKE_CXX_FLAGS "-std=c++14")
+# set(CMAKE_CXX_FLAGS_RELEASE "-O3 -Wall -g")
+
+add_compile_options(-std=c++14)
+
+set(CMAKE_CXX_STANDARD 14)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
 
 find_package(catkin REQUIRED COMPONENTS
   geometry_msgs
@@ -30,18 +36,27 @@ include_directories(
   ${CERES_INCLUDE_DIRS}
   ${OpenCV_INCLUDE_DIRS})
 
+set(PUBLIC_HPP
+  include/ford_mapping_lib/PointXYZIRD.hpp
+)
+
 catkin_package(
   CATKIN_DEPENDS geometry_msgs nav_msgs roscpp rospy std_msgs
+  LIBRARIES ${PROJECT_NAME}
   DEPENDS EIGEN3 PCL 
   INCLUDE_DIRS include
 )
 
-add_executable(ford_mapping src/ford_mapping.cpp)
-target_link_libraries(ford_mapping ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${OpenCV_LIBS})
 
-# add_executable(kittiHelper src/kittiHelper.cpp)
-# target_link_libraries(kittiHelper ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${OpenCV_LIBS})
 
-# add_executable(lidarMappingGyu src/lidarMappingGyu.cpp)
-# target_link_libraries(lidarMappingGyu ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${OpenCV_LIBS})
+add_library(${PROJECT_NAME} SHARED ${PUBLIC_HPP})
+target_link_libraries(${PROJECT_NAME}
+${catkin_LIBRARIES})
+set_target_properties(${PROJECT_NAME} PROPERTIES LINKER_LANGUAGE CXX) # Linker language error solved
+
+add_executable(ford_mapping_temp src/ford_mapping.cpp)
+target_link_libraries(ford_mapping_temp ${PROJECT_NAME} ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${OpenCV_LIBS} ) 
+
+
+
 
