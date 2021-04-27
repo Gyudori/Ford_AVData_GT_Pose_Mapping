@@ -1,4 +1,5 @@
 #include <ros/ros.h>
+#include <rosbag/bag.h>
 #include <nav_msgs/Odometry.h>
 #include <sensor_msgs/PointCloud2.h>
 #include <geometry_msgs/PoseStamped.h>
@@ -23,6 +24,8 @@
 
 std::mutex mBuf;
 
+rosbag::Bag bag_out;
+
 std::queue<sensor_msgs::PointCloud2ConstPtr> laserCloudBuf;
 std::queue<geometry_msgs::PoseStampedConstPtr> poseGtBuf;
 std::queue<geometry_msgs::PoseStampedConstPtr> poseGtOneScanBuf;
@@ -32,6 +35,7 @@ pcl::PointCloud<PointXYZIRD>::Ptr laserCloudIR(new pcl::PointCloud<PointXYZIRD>(
 
 pcl::PointCloud<pcl::PointXYZI>::Ptr lidarMap(new pcl::PointCloud<pcl::PointXYZI>());
 pcl::PointCloud<PointXYZIRD>::Ptr lidarMapIR(new pcl::PointCloud<PointXYZIRD>());
+pcl::PointCloud<pcl::PointXYZRGB>::Ptr lidarMapRGB(new pcl::PointCloud<pcl::PointXYZRGB>());
 
 geometry_msgs::PoseStamped::Ptr poseGt(new geometry_msgs::PoseStamped());
 
@@ -43,6 +47,8 @@ int waitingMsec = 0;
 int frameCount = 0;
 int LOAD_FRAME_NUM;
 int SKIP_FRAME_NUM;
+std::string OUTPUT_BAG_FILE;
+bool TO_BAG = false;
 bool printedFlag = false;
 bool startedFlag = false;
 bool endFlag = false;
@@ -62,6 +68,7 @@ void poseGtHandler(const geometry_msgs::PoseStampedConstPtr &poseGtMsg){
     mBuf.unlock();
 }
 
+// TO DO: Integrate functions of system calibration and pose transform 
 void systemCalibration(pcl::PointXYZI const *const pi, pcl::PointXYZI *const po)
 {
     Eigen::Vector3d point_curr(pi->x, pi->y, pi->z);
@@ -114,9 +121,9 @@ void pointOrganize(pcl::PointCloud<pcl::PointXYZI>::Ptr cloudIn, pcl::PointCloud
         pcl::PointXYZI pointIn(cloudIn->points[i]);
 
         float verticalAngle = atan(pointIn.z / sqrt(pointIn.x * pointIn.x + pointIn.y * pointIn.y)) * 180 / M_PI;
-        int ring = int((verticalAngle + 92.0/3.0) * 3.0 / 4.0 + 0.5);       
+        int ring = int((verticalAngle + 92.0/3.0) * 3.0 / 4.0 + 0.5);
         
-        float distance = sqrt(pointIn.x * pointIn.x + pointIn.y * pointIn.y + pointIn.z * pointIn.z);      
+        float distance = sqrt(pointIn.x * pointIn.x + pointIn.y * pointIn.y + pointIn.z * pointIn.z);
 
         PointXYZIRD pointOut;
 
@@ -125,16 +132,10 @@ void pointOrganize(pcl::PointCloud<pcl::PointXYZI>::Ptr cloudIn, pcl::PointCloud
         pointOut.z = pointIn.z;
         pointOut.intensity = pointIn.intensity;
         pointOut.ring = ring;
-        pointOut.distance = distance;
-
-        // // Debug
-        // if(i % (cloudIn->points.size() / 100) == 0){
-        //     std::cout << "Ring Num: " << ring << "\n";
-        // }        
+        pointOut.distance = distance;    
 
         cloudOut->points.push_back(pointOut);
-    }    
-    
+    }        
 }
 
 template<typename T>
@@ -150,6 +151,41 @@ void waitForEmptyQueue(std::queue<T> &queueBuf){
     }
 }
 
+void writeRgbMapForMeshLab(){
+
+    for(size_t i = 0; i < lidarMapIR->points.size(); i++){
+
+        if(lidarMapIR->points[i].distance < 30){
+            pcl::PointXYZRGB point;
+            point.x = lidarMapIR->points[i].x;
+            point.y = lidarMapIR->points[i].y;
+            point.z = lidarMapIR->points[i].z;
+            point.r = (uint8_t)lidarMapIR->points[i].intensity;
+            point.g = (uint8_t)lidarMapIR->points[i].intensity;
+            point.b = (uint8_t)lidarMapIR->points[i].intensity;
+            lidarMapRGB->points.push_back(point);
+        }                
+    }  
+    pcl::io::savePLYFileBinary("/home/gyuseok/catkin_ws_kitti/result_data/ford_mapping_rgb.ply",*lidarMapRGB);   
+    std::cout << "XYZRGB Ply writing done! \n Writing txt file... \n";
+}
+
+void writeTxtForCloudCompare(){
+
+    std::fstream fs;                
+    fs.open("/home/gyuseok/catkin_ws_kitti/result_data/ford_mapping_test.txt", std::fstream::out);
+    for(size_t i = 0; i < lidarMapIR->points.size(); i++){
+        fs << lidarMapIR->points[i].x << " ";
+        fs << lidarMapIR->points[i].y << " ";
+        fs << lidarMapIR->points[i].z << " ";
+        fs << lidarMapIR->points[i].intensity << " ";
+        fs << lidarMapIR->points[i].ring << " ";
+        fs << lidarMapIR->points[i].distance << "\n";          
+    }
+    fs.close();
+    std::cout << "Txt writing done! \n";
+}
+
 void process(){
     while(1){
 
@@ -158,7 +194,7 @@ void process(){
         }
 
         std::cout << "Process running... \n";
-        while(!laserCloudBuf.empty() && !poseGtBuf.empty()){           
+        while(!laserCloudBuf.empty() && !poseGtBuf.empty()){
             
             startedFlag = true;
             waitingMsec = 0;
@@ -166,6 +202,10 @@ void process(){
             currLaserCloudTime = laserCloudBuf.front()->header.stamp.toNSec();            
            
             laserCloud->clear(); 
+
+            if(TO_BAG){
+                bag_out.write("/velodyne_points", laserCloudBuf.front()->header.stamp, laserCloudBuf.front());
+            }
             
             pcl::fromROSMsg(*laserCloudBuf.front(), *laserCloud);
             laserCloudBuf.pop();            
@@ -178,7 +218,7 @@ void process(){
             currLaserCloudTime = laserCloudBuf.front()->header.stamp.toNSec();    
 
             
-            // Starting with Pose            
+            // Starting with Pose
             while(poseGtBuf.front()->header.stamp.toNSec() < preLaserCloudTime && !poseGtBuf.empty()){
                 poseGtBuf.pop();
             } 
@@ -186,13 +226,15 @@ void process(){
             waitForEmptyQueue(poseGtBuf);
             while(poseGtBuf.front()->header.stamp.toNSec() >= preLaserCloudTime &&
             poseGtBuf.front()->header.stamp.toNSec() < currLaserCloudTime)
-            {                   
+            {
                 // std::cout << "PoseGT Time: " << poseGtBuf.front()->header.stamp.toNSec() << "\n";
                                 
                 poseGtOneScanBuf.push(poseGtBuf.front());
                 poseGtBuf.pop();  
-                waitForEmptyQueue(poseGtBuf);                           
+                waitForEmptyQueue(poseGtBuf);        
             }
+
+            std::cout << "Num of pose in one scan: " << poseGtOneScanBuf.size() << "\n";
 
             // 1개 스캔의 포즈들에 따라 점군 매핑
             size_t count = 0;
@@ -202,6 +244,10 @@ void process(){
                 Eigen::Vector3d t_curr;
                 poseTime = poseGtOneScanBuf.front()->header.stamp.toNSec();
                 
+                if(TO_BAG){
+                    bag_out.write("/pose_ground_truth", poseGtOneScanBuf.front()->header.stamp, poseGtOneScanBuf.front());
+                }
+
                 q_curr.x() = poseGtOneScanBuf.front()->pose.orientation.x;
                 q_curr.y() = poseGtOneScanBuf.front()->pose.orientation.y;
                 q_curr.z() = poseGtOneScanBuf.front()->pose.orientation.z;
@@ -236,18 +282,9 @@ void process(){
             } 
             
             printedFlag = false;
-
-            // Write PLY file in Loop
-            // if(frameCount == LOAD_FRAME_NUM){
-            //     std::cout << "End of stream \n Ply file writing";
-            //     pcl::PLYWriter writer;    
-            //     writer.write<pcl::PointXYZI> 
-            //         ("/home/gyuseok/catkin_ws_kitti/result_data/ford_mapping_test.ply"
-            //         ,*lidarMap, false);
-            // }
             
             std::cout << "Current frame count: " << frameCount << "\n";
-            frameCount++;    
+            frameCount++;
         }
 
         while((laserCloudBuf.empty() || poseGtBuf.empty()) && startedFlag){
@@ -256,25 +293,20 @@ void process(){
             waitingMsec += 100;
             
             if(waitingMsec > 3000){
+                
+                bag_out.close();
+                
                 std::cout << "End of stream\nWriting ply file... \n";
-                pcl::PLYWriter writer;    
+
+                pcl::PLYWriter writer;
                 writer.write<PointXYZIRD> 
                     ("/home/gyuseok/catkin_ws_kitti/result_data/ford_mapping_test.ply"
                     ,*lidarMapIR, false);
-                std::cout << "Ply writing done! \n Writing txt file... \n";
+                std::cout << "Ply writing done! \n Writing rgb ply file... \n";
 
-                std::fstream fs;                
-                fs.open("/home/gyuseok/catkin_ws_kitti/result_data/ford_mapping_test.txt", std::fstream::out);
-                for(size_t i = 0; i < lidarMapIR->points.size(); i++){
-                    fs << lidarMapIR->points[i].x << " ";
-                    fs << lidarMapIR->points[i].y << " ";
-                    fs << lidarMapIR->points[i].z << " ";
-                    fs << lidarMapIR->points[i].intensity << " ";
-                    fs << lidarMapIR->points[i].ring << " ";
-                    fs << lidarMapIR->points[i].distance << "\n";                    
-                }
-                fs.close();
-                std::cout << "Txt writing done! \n";
+                writeRgbMapForMeshLab();
+                writeTxtForCloudCompare();
+                
                 endFlag = true;
                 break;
             }
@@ -292,6 +324,13 @@ int main(int argc, char** argv){
 
     nh.getParam("load_frame_num", LOAD_FRAME_NUM);
     nh.getParam("skip_frame_num", SKIP_FRAME_NUM);
+    nh.getParam("to_bag", TO_BAG);
+    nh.getParam("output_bag_file", OUTPUT_BAG_FILE);
+
+    
+    if(TO_BAG){
+        bag_out.open(OUTPUT_BAG_FILE, rosbag::bagmode::Write);
+    }
 
     ros::Subscriber subLaserCloud = nh.subscribe<sensor_msgs::PointCloud2>
                                 ("/velodyne_points", 100, laserCloudHandler);

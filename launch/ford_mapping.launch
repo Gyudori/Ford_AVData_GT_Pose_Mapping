@@ -1,7 +1,10 @@
 <launch>   
 
     <param name="load_frame_num" type="int" value="100"/>
-    <param name="skip_frame_num" type="int" value="2"/>
+    <param name="skip_frame_num" type="int" value="1"/>
+    <param name="to_bag" type="bool" value="true"/>
+    <param name="output_bag_file" type="string" 
+        value="/home/gyuseok/catkin_ws_kitti/result_data/ford_mapping_odometry.bag"/>
 
     <node name="ford_mapping" pkg="ford_mapping" type="ford_mapping_temp" output="screen" />
     <include file="$(find ford_mapping)/launch/lidar_convert.launch" />

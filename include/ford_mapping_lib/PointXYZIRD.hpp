@@ -8,7 +8,7 @@ struct PointXYZIRD{
         float data_c[4];
         struct{
             int ring;
-            int intensity;
+            float intensity;
             float distance;
         };
     };
@@ -19,6 +19,6 @@ POINT_CLOUD_REGISTER_POINT_STRUCT(PointXYZIRD,
     (float, y, y)
     (float, z, z)
     (int, ring, ring)
-    (int, intensity, intensity)
+    (float, intensity, intensity)
     (float, distance, distance)
 )
