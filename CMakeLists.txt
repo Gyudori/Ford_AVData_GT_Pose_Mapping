@@ -57,7 +57,8 @@ set_target_properties(${PROJECT_NAME} PROPERTIES LINKER_LANGUAGE CXX) # Linker l
 add_executable(ford_mapping_temp src/ford_mapping.cpp)
 target_link_libraries(ford_mapping_temp ${PROJECT_NAME} ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${OpenCV_LIBS} ) 
 
-add_executable(ford_pose_csv src/ford_pose_bag2csv.cpp)
-target_link_libraries(ford_pose_csv ${PROJECT_NAME} ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${OpenCV_LIBS} ) 
+add_executable(ford_bag2csv src/ford_bag2csv.cpp)
+target_link_libraries(ford_bag2csv ${PROJECT_NAME} ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${OpenCV_LIBS} ) 
 
-
+add_executable(unity_simPt2Bag src/unity_simPt2Bag.cpp)
+target_link_libraries(unity_simPt2Bag ${PROJECT_NAME} ${catkin_LIBRARIES} ${PCL_LIBRARIES} ${OpenCV_LIBS} ) 

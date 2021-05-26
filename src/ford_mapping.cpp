@@ -28,6 +28,9 @@
 #include <thread>
 #include <sstream>
 #include <fstream>
+#include <iomanip>
+#include <ctime>
+
 
 std::mutex mBuf;
 
@@ -54,6 +57,8 @@ uint64_t poseTime;
 uint64_t currLaserCloudTime;
 uint64_t preLaserCloudTime = 0;
 
+std::vector<int> scanEndInd;
+
 int waitingMsec = 0;
 int frameCount = 0;
 int LOAD_FRAME_NUM;
@@ -61,10 +66,11 @@ int SKIP_FRAME_NUM;
 double DIST_THRES = 100, LEAF_SIZE = 0.1;
 std::string OUTPUT_BAG_FILE, OUTPUT_PLY_FILE;
 bool TO_BAG = false, TO_MESHLAB_PLY = false;
+bool MOTION_CORRECTED = true;
 bool printedFlag = false;
 bool startedFlag = false;
 bool endFlag = false;
-bool isMotionCorrected = true;
+bool oneFrameMappingDone = false;
 
 Eigen::Quaterniond q_lidarBody(0.003582, -0.704648, -0.709546, 0.001830); // w, x, y, z
 Eigen::Vector3d t_lidarBody(1.13216, -0.378115, -1.40641);
@@ -126,6 +132,68 @@ void pointTransform(PointXYZIRD const *const pi, PointXYZIRD *const po, Eigen::Q
     po->distance = pi->distance;
 }
 
+pcl::PointCloud<PointXYZIRD>::Ptr removeOverOneFrame(pcl::PointCloud<PointXYZIRD>::Ptr cloudIn)
+{
+    pcl::PointCloud<PointXYZIRD>::Ptr cloudOut(new pcl::PointCloud<PointXYZIRD>());
+    float startOri = atan2(cloudIn->points[0].y, cloudIn->points[0].x);
+
+    if(startOri < 0){
+        startOri = -startOri;
+    }
+    else{
+        startOri = 2 * M_PI - startOri;
+    }
+
+    // For debug
+    if(frameCount == 19){
+        int a = 1;
+    }
+
+    float endOri = startOri + 2 * M_PI;
+    int poseInd = 1;
+    bool exceedAxis = false;
+
+    for(int i = 0; i < cloudIn->points.size(); i++){
+        float pointOri = atan2(cloudIn->points[i].y, cloudIn->points[i].x);
+        
+        // Orientation unify
+        if(pointOri < 0){
+            pointOri = -pointOri;
+        }
+        else{
+            pointOri = 2 * M_PI - pointOri;
+        }
+
+        // Make orientation incremental
+        if(pointOri < startOri - 0.2f * M_PI / 180){
+             exceedAxis = true;
+        }
+
+        if(exceedAxis){
+            pointOri += 2 * M_PI;
+        }
+
+        // For debug
+        // cloudIn->points[i].distance = pointOri;    
+
+        // Indexing mapping point range per pose
+        if(pointOri >= startOri + 2 * M_PI/poseGtOneScanBuf.size() * poseInd){
+            scanEndInd.push_back(i-1);
+            poseInd++;
+        }    
+
+        // Distinguish orientation larger than one frame
+        if(pointOri >= endOri){
+             break;
+        }
+        else{
+            cloudOut->points.push_back(cloudIn->points[i]);
+        }         
+    }
+
+    return cloudOut;
+}
+
 void pointOrganize(pcl::PointCloud<pcl::PointXYZI>::Ptr cloudIn, pcl::PointCloud<PointXYZIRD>::Ptr cloudOut){
     
     for(size_t i = 0; i < cloudIn->points.size(); i++){
@@ -182,7 +250,7 @@ void writeRgbMapForMeshLab(pcl::PointCloud<PointXYZIRD>::Ptr lidarMap){
         point.normal_z = lidarNormals->points[i].normal_z;
         lidarMapRGBNormal->points.push_back(point);              
     }  
-    pcl::io::savePLYFileBinary(OUTPUT_PLY_FILE,*lidarMapRGBNormal);   
+    pcl::io::savePLYFileBinary(OUTPUT_PLY_FILE+"vfiltered_rgb.ply",*lidarMapRGBNormal);   
     std::cout << "XYZRGBNormal Ply writing done!";
 }
 
@@ -282,50 +350,92 @@ void process(){
             startedFlag = true;
             waitingMsec = 0;
 
-            currLaserCloudTime = laserCloudBuf.front()->header.stamp.toNSec();            
+            currLaserCloudTime = laserCloudBuf.front()->header.stamp.toNSec();  
+            ros::Time currLaserStamp = laserCloudBuf.front()->header.stamp;
            
             laserCloud->clear(); 
-
-            if(TO_BAG){
-                bag_out.write("/velodyne_points", laserCloudBuf.front()->header.stamp, laserCloudBuf.front());
-            }
             
             pcl::fromROSMsg(*laserCloudBuf.front(), *laserCloud);
-            laserCloudBuf.pop();            
+            laserCloudBuf.pop();  
+
+            std::cout << "Frame: " << frameCount << "\n";
+            std::cout << "Before Cloud size: " << laserCloud->points.size() << "\n";          
 
             laserCloudIR->clear();
             pointOrganize(laserCloud, laserCloudIR);
+            std::cout << "After Organize Cloud size: " << laserCloudIR->points.size() << "\n"; 
 
             waitForEmptyQueue(laserCloudBuf);   
-            if(laserCloudBuf.empty()){
+            if(laserCloudBuf.empty()){ // 여기 손봐야됨. 일단 마지막꺼는 매핑 안하려고 이렇게 함.
                 break;
             }      
             preLaserCloudTime = currLaserCloudTime;
             currLaserCloudTime = laserCloudBuf.front()->header.stamp.toNSec();   
 
             
-            // Starting with Pose
+            // Delete pose before the start time of laser scan
             while(poseGtBuf.front()->header.stamp.toNSec() < preLaserCloudTime && !poseGtBuf.empty()){
                 poseGtBuf.pop();
             } 
 
             waitForEmptyQueue(poseGtBuf);
-            while(poseGtBuf.front()->header.stamp.toNSec() >= preLaserCloudTime &&
+            while(!poseGtBuf.empty() && poseGtBuf.front()->header.stamp.toNSec() >= preLaserCloudTime &&
             poseGtBuf.front()->header.stamp.toNSec() < currLaserCloudTime)
             {
-                // std::cout << "PoseGT Time: " << poseGtBuf.front()->header.stamp.toNSec() << "\n";
-                                
+                // std::cout << "PoseGT Time: " << poseGtBuf.front()->header.stamp.toNSec() << "\n";                                
                 poseGtOneScanBuf.push(poseGtBuf.front());
-                poseGtBuf.pop();  
-                waitForEmptyQueue(poseGtBuf);
+                poseGtBuf.pop();
+                 waitForEmptyQueue(poseGtBuf);
+            }     
+
+            // Exception for last frame
+            if(poseGtOneScanBuf.size() < 17){
+                break;
+            }
+
+            laserCloudIR = removeOverOneFrame(laserCloudIR);
+
+            std::cout << "After OneFrame Cloud size: " << laserCloudIR->points.size() << "\n"; 
+
+            // For debug
+            // if(frameCount == 0){
+            //     writeTxtForCloudCompare(laserCloudIR, "one_scan_before_removal.txt");
+            //     laserCloudIR = removeOverOneFrame(laserCloudIR);
+            //     writeTxtForCloudCompare(laserCloudIR, "one_scan_after_removal.txt");
+            // }
+
+            if(TO_BAG){
+                pcl::PointCloud<pcl::PointXYZI>::Ptr refinedRawCloud(new pcl::PointCloud<pcl::PointXYZI>());
+                pcl::PointXYZI point;
+
+                for(size_t i = 0; i < laserCloudIR->points.size(); i++){
+                    point.x = laserCloudIR->points[i].x;
+                    point.y = laserCloudIR->points[i].y;
+                    point.z = laserCloudIR->points[i].z;
+                    point.intensity = laserCloudIR->points[i].intensity;
+
+                    refinedRawCloud->points.push_back(point);
+                }
+
+                sensor_msgs::PointCloud2 refinedRawCloud2;
+                pcl::toROSMsg(*refinedRawCloud, refinedRawCloud2);
+                refinedRawCloud2.header.stamp = currLaserStamp;
+                refinedRawCloud2.header.frame_id = "/velodyne";
+            
+                bag_out.write("/velodyne_points", refinedRawCloud2.header.stamp, refinedRawCloud2);
             }
             
+
             size_t pointCount = 0;
             int poseCount = 0;
             Eigen::Quaterniond q_first;
-            Eigen::Vector3d t_first;
+            Eigen::Vector3d t_first;   
             // 1개 스캔의 포즈들에 따라 점군 매핑
             while(!poseGtOneScanBuf.empty()){
+
+                if(oneFrameMappingDone){
+                    break;
+                }
 
                 Eigen::Quaterniond q_curr;
                 Eigen::Vector3d t_curr;
@@ -348,8 +458,7 @@ void process(){
                     viewPoint.y = t_first.y();
                     viewPoint.z = t_first.z();
                     lidarViewPoint->points.push_back(viewPoint);
-                }
-                poseCount++;                
+                }                
 
                 q_curr.x() = poseGtOneScanBuf.front()->pose.orientation.x;
                 q_curr.y() = poseGtOneScanBuf.front()->pose.orientation.y;
@@ -362,38 +471,44 @@ void process(){
 
                 uint64_t laserCloudScanningTime = currLaserCloudTime - preLaserCloudTime;
                 uint64_t poseTimeScanning = poseTime - preLaserCloudTime;
-
-                // 이부분을 나중에 각도에 대해서 다시 해보면 좋을듯.
-                size_t pointNumEnd = (size_t)((poseTimeScanning / (float)laserCloudScanningTime) * laserCloudIR->points.size());
-                if(poseGtOneScanBuf.empty()){
+                
+                size_t pointNumEnd;
+                // scanEndInd에서 매핑해야하는 인덱스를 다썼거나, pose가 비어있는경우 매핑을 멈춤
+                if(scanEndInd.size()-1 == poseCount || poseGtOneScanBuf.empty()){
                     pointNumEnd = laserCloudIR->points.size();
+                    oneFrameMappingDone = true;
                 }
+                else{
+                    pointNumEnd = scanEndInd[poseCount];
+                }                
+                
                 for(size_t i = pointCount; i < pointNumEnd; i++){          
                     systemCalibration(&laserCloudIR->points[i], &laserCloudIR->points[i]);
 
-                    if(isMotionCorrected){
+                    if(MOTION_CORRECTED){
                         pointTransform(&laserCloudIR->points[i], &laserCloudIR->points[i], q_curr, t_curr);  
                     }
                     else{
                         pointTransform(&laserCloudIR->points[i], &laserCloudIR->points[i], q_first, t_first);
-                    }                    
+                    }  
                     
-                    if(frameCount % SKIP_FRAME_NUM == 0){
-                        if(!printedFlag){
-                            std::cout << "Frame: " << frameCount << "\n";
-                            std::cout << "Curr x: " << t_curr.x() << "\nCurr y: " << t_curr.y() << "\nCurr z: " << t_curr.z() << "\n";
-                            printedFlag = true;
-                        }
-                        lidarMapIR->points.push_back(laserCloudIR->points[i]);                        
-                    }                    
-                }                
-                pointCount = pointNumEnd;    
-            } 
-            
-            printedFlag = false;            
-            
-            std::cout << "Current frame count: " << frameCount << "\n";
+                    if(!printedFlag){
+                        std::cout << "After Mapping Cloud size: " << laserCloudIR->points.size() << "\n";   
+                        printedFlag = true;
+                    }
+                    lidarMapIR->points.push_back(laserCloudIR->points[i]);           
+                    
+                }
+
+                poseCount++;
+                pointCount = pointNumEnd;
+            }
+
+            printedFlag = false;
+            oneFrameMappingDone = false;
+
             frameCount++;
+            scanEndInd.clear();
         }
 
         while((laserCloudBuf.empty() || poseGtBuf.empty()) && startedFlag){
@@ -409,8 +524,7 @@ void process(){
 
                 pcl::PLYWriter writer;
                 writer.write<PointXYZIRD> 
-                    ("/home/gyuseok/catkin_ws_kitti/result_data/ford_mapping_test.ply"
-                    ,*lidarMapIR, false);
+                    (OUTPUT_PLY_FILE + "IRD.ply",*lidarMapIR, false);
                 std::cout << "Ply writing done! \n Writing rgb ply file... \n";
                
                 lidarMapIRVoxelFiltered = voxelFiltering(lidarMapIR);
@@ -441,10 +555,19 @@ int main(int argc, char** argv){
     nh.getParam("output_ply_file", OUTPUT_PLY_FILE);
     nh.getParam("distance_threshold", DIST_THRES);
     nh.getParam("voxel_leaf_size", LEAF_SIZE);
+    nh.getParam("motion_corrected", MOTION_CORRECTED);
 
+    auto t = std::time(nullptr);
+    auto tm = *std::localtime(&t);
+    std::ostringstream oss;
+    oss << std::put_time(&tm, "%Y-%m-%d-%H-%M-%S");
+    auto str = oss.str();
+
+    std::cout << "Current Date Time: "<< str << "\n";    
     
     if(TO_BAG){
-        bag_out.open(OUTPUT_BAG_FILE, rosbag::bagmode::Write);
+        std::string bagFileName = OUTPUT_BAG_FILE + str + ".bag";
+        bag_out.open(bagFileName, rosbag::bagmode::Write);
     }
 
     ros::Subscriber subLaserCloud = nh.subscribe<sensor_msgs::PointCloud2>

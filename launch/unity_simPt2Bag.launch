@@ -1,0 +1,11 @@
+<!-- -*- mode: XML -*- -->
+<!-- run velodyne_pointcloud/CloudNodelet in a nodelet manager -->
+
+<launch>
+  <param name="output_bag_file" type="string" 
+      value="/home/gyuseok/catkin_ws_kitti/result_data/Precise_80.bag" />
+  <param name="input_file_name" type="string"   
+      value="/home/gyuseok/Unity/New Unity Project/Assets/output_sample/Precise_32Channel_LidarCS_80_Frames.csv" />
+      
+  <node pkg="ford_mapping" type="unity_simPt2Bag" name="unity_simPt2Bag" />  
+</launch>
